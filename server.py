@@ -3,13 +3,13 @@
 # streaming, and the N3 change-log for applied updates.
 
 import zipfile
-from flask import Flask, request, jsonify, stream_with_context, Response
+from flask import Flask, request, jsonify, stream_with_context, Response, abort, make_response
 import torch
 import json
 from rdflib import Graph, URIRef
 from manager import LoreManager, TrainingInfo
 import argparse
-from typing import Set, Tuple
+from typing import Set, Tuple, Optional, List, Any
 import sys
 
 
@@ -22,13 +22,14 @@ class LoreApp(Flask):
     GET  /             -> health/config probe
     GET  /base         -> export current node/relation URIs + embeddings
     GET  /log?type=... -> retrieve N3-encoded change-log (add/remove)
-    POST /train        -> start streaming training logs over a long-lived response
-    POST /rec          -> reconstruct embeddings for a set of URIs
-    POST /what-if      -> hypothetical neighborhood embedding
-    POST /update       -> apply add/remove edge updates (and log them)
+    POST /train        -> start streaming training logs over a long-lived response (JSON input)
+    POST /rec          -> reconstruct embeddings for a set of URIs (JSON input)
+    POST /what-if      -> hypothetical neighborhood embedding (JSON input)
+    POST /update       -> apply add/remove edge updates (JSON input)
 
     Notes
     -----
+    - All POST endpoints require application/json requests.
     - Training streams plain text lines; the client should keep the connection open.
     - Updates maintain a simple in-memory RDFLib Graph for 'add' and 'remove' logs.
     """
@@ -61,6 +62,61 @@ class LoreApp(Flask):
         self.add_url_rule("/what-if", view_func=self.what_if, methods=["POST"])
         self.add_url_rule("/update", view_func=self.update, methods=["POST"])
         self.add_url_rule("/log", view_func=self.get_log, methods=["GET"])
+
+        # Error handling: ensure JSON errors for API consumers.
+        self.register_error_handler(Exception, self.handle_any)
+
+    # -----------------------------
+    # Helpers
+    # -----------------------------
+
+    def expect_json(self, required: Optional[List[str]] = None, allow_empty: bool = False) -> dict:
+        """Validate content-type and parse JSON consistently.
+
+        - Returns parsed dict.
+        - If required keys are missing, raises HTTP 400.
+        - If content-type isn't JSON, raises HTTP 415.
+        - If allow_empty is True, an empty JSON object is accepted (useful for /train defaults).
+        """
+        if not request.is_json:
+            abort(make_response(jsonify(error="Expected application/json"), 415))
+        data = request.get_json(silent=True)
+        if data is None:
+            data = {}
+        if not allow_empty and required is None and data == {}:
+            # No explicit schema, but we still expect a JSON object; accept empty by default.
+            pass
+        if required:
+            missing = [k for k in required if k not in data]
+            if missing:
+                abort(make_response(jsonify(error=f"Missing fields: {missing}"), 400))
+        return data
+
+    @staticmethod
+    def tolist(x: Any) -> Any:
+        """Convert tensors/ndarrays to plain Python lists for JSON serialization."""
+        try:
+            import numpy as np
+            if isinstance(x, torch.Tensor):
+                return x.detach().cpu().numpy().tolist()
+            if isinstance(x, np.ndarray):
+                return x.tolist()
+        except Exception:
+            pass
+        return x
+
+    # -----------------------------
+    # Error handler
+    # -----------------------------
+
+    def handle_any(self, e: Exception):
+        code = getattr(e, "code", 500)
+        # For production, avoid leaking internals; customize message if needed.
+        return jsonify(error=str(e)), code
+
+    # -----------------------------
+    # Routes
+    # -----------------------------
 
     def home(self):
         """
@@ -133,7 +189,8 @@ class LoreApp(Flask):
             finally:
                 print("Generator finished or interrupted", file=sys.stderr)
 
-        config = request.get_json(silent=True) or {}
+        # Accept JSON (possibly empty object) and enforce content-type.
+        config = self.expect_json(required=None, allow_empty=True)
 
         # Reset change-log on new training session (optional choice).
         self.log = {"add": Graph(), "remove": Graph()}
@@ -158,18 +215,19 @@ class LoreApp(Flask):
         """
         Reconstruct embeddings for provided URIs.
 
-        Body (form-data)
-        ----------------
-        uris: JSON-encoded list of string URIs
+        Body (JSON)
+        -----------
+        { "uris": ["uri1", "uri2", ...] }
 
         Returns
         -------
         { "result": [[...], ...] }  # list of vectors
         """
-        uris = json.loads(request.form.get("uris"))
+        data = self.expect_json(required=["uris"])
+        uris = data["uris"]
         try:
-            result = self.manager.reconstruct(reconstruct_items=uris).detach().cpu().numpy().tolist()
-            return jsonify({"result": result})
+            result = self.manager.reconstruct(reconstruct_items=uris)
+            return jsonify({"result": self.tolist(result)})
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
@@ -186,21 +244,15 @@ class LoreApp(Flask):
           "inverse":   [ 0|1, ... ]  # aligns with neighbors/relations
         }
         """
-        config = request.get_json()
-        if not config:
-            return jsonify({"error": "Missing JSON body"}), 400
-
-        neighbors = config.get("neighbors")
-        relations = config.get("relations")
-        inverse = config.get("inverse")
+        data = self.expect_json(required=["neighbors", "relations", "inverse"])
 
         try:
-            result = self.manager.what_if(neighbors=neighbors,
-                                          relations=relations,
-                                          inverse=inverse)
-            # NOTE: If jsonify fails (Tensor not serializable), convert to list:
-            # result = result.detach().cpu().numpy().tolist()
-            return jsonify({"result": result})
+            result = self.manager.what_if(
+                neighbors=data["neighbors"],
+                relations=data["relations"],
+                inverse=data["inverse"]
+            )
+            return jsonify({"result": self.tolist(result)})
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
@@ -250,11 +302,11 @@ class LoreApp(Flask):
         }
         """
 
-        config = request.get_json()
+        data = self.expect_json(required=["nodes", "relations", "updates"])
 
-        nodes = config.get("nodes")
-        relations = config.get("relations")
-        updates = config.get("updates")
+        nodes = data.get("nodes")
+        relations = data.get("relations")
+        updates = data.get("updates")
 
         # Update local change-log first (for immediate visibility via /log)
         if 'add' in updates:
