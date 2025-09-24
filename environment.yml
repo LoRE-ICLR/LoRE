@@ -1,0 +1,25 @@
+name: lore
+channels:
+  - nvidia
+  - pytorch
+  - conda-forge
+  - defaults
+
+dependencies:
+  - python=3.12
+  - pytorch
+  - torchvision
+  - torchaudio
+  - pytorch-cuda
+  - cudatoolkit
+  - filelock
+  - fsspec
+  - jinja2
+  - markupsafe
+  - mpmath
+  - networkx
+  - numpy
+  - pyparsing
+  - rdflib
+  - sympy
+  - typing_extensions

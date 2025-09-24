@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Conda / venv
+env/
+venv/
+.venv/
+
+# PyCharm
+.idea/
+
+# VS Code
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Output folder — keep folder, ignore contents
+out/*
+!out/.gitkeep
