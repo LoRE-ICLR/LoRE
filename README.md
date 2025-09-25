@@ -1,4 +1,4 @@
-# LoRE: End-to-End Dynamic Knowledge Graph Embeddings via Local Reconstructions
+# LoRE: End-to-End Dynamic Graph Embeddings via Local Reconstructions
 
 This repository contains the official supplementary code for our ICLR 2026 submission:
 
