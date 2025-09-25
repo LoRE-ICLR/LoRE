@@ -1,4 +1,4 @@
-# LoRE: End-to-End Dynamic Graph Embeddings via Local Reconstructions
+# LoRE: Robust and Adaptive Graph Embeddings via Local Self-Reconstruction Mechanisms
 
 This repository contains the official supplementary code for our ICLR 2026 submission:
 
